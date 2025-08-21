@@ -1,0 +1,107 @@
+name: OpenTimestamps Proof
+ 
+on:
+  push:
+    paths:
+      - 'roots/**/*.json'
+  workflow_dispatch:
+ 
+jobs:
+  timestamp:
+    runs-on: ubuntu-latest
+   
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+     
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+     
+      - name: Install OpenTimestamps
+        run: |
+          pip install opentimestamps-client
+          ots --version
+     
+      - name: Find new root files
+        id: find-roots
+        run: |
+          # Find JSON files that were added or modified in the last commit
+          git diff --name-only HEAD^ HEAD | grep "roots/.*\.json$" > changed_files.txt || true
+         
+          if [ -s changed_files.txt ]; then
+            echo "Found root files to timestamp:"
+            cat changed_files.txt
+            echo "has_files=true" >> $GITHUB_OUTPUT
+          else
+            echo "No root files to timestamp"
+            echo "has_files=false" >> $GITHUB_OUTPUT
+          fi
+     
+      - name: Create timestamps
+        if: steps.find-roots.outputs.has_files == 'true'
+        run: |
+          while IFS= read -r json_file; do
+            if [ -f "$json_file" ]; then
+              echo "Processing $json_file"
+             
+              # Extract root hash from JSON
+              root_hash=$(jq -r '.root' "$json_file")
+             
+              # Create a text file with just the root hash
+              root_file="${json_file%.json}.txt"
+              echo "$root_hash" > "$root_file"
+             
+              # Create OTS timestamp
+              ots stamp "$root_file"
+             
+              if [ -f "${root_file}.ots" ]; then
+                echo "✅ Created timestamp for $json_file"
+               
+                # Try to upgrade the proof (might not be ready immediately)
+                ots upgrade "${root_file}.ots" || true
+              else
+                echo "❌ Failed to create timestamp for $json_file"
+              fi
+            fi
+          done < changed_files.txt
+     
+      - name: Commit timestamps
+        if: steps.find-roots.outputs.has_files == 'true'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+         
+          # Add all .txt and .ots files
+          git add "roots/**/*.txt" "roots/**/*.ots" || true
+         
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No timestamps to commit"
+          else
+            git commit -m "Add OpenTimestamps proofs [skip ci]"
+            git push
+          fi
+     
+      - name: Upgrade existing proofs
+        run: |
+          # Find all existing OTS files and try to upgrade them
+          find roots -name "*.ots" -type f | while read -r ots_file; do
+            echo "Attempting to upgrade $ots_file"
+            ots upgrade "$ots_file" || true
+          done
+         
+          # Commit any upgrades
+          git add "roots/**/*.ots" || true
+         
+          if git diff --staged --quiet; then
+            echo "No upgrades to commit"
+          else
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git commit -m "Upgrade OpenTimestamps proofs [skip ci]"
+            git push
+          fi
