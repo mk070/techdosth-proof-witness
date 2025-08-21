@@ -1,4 +1,9 @@
 name: OpenTimestamps Proof
+ # Grant write permissions to the workflow
+permissions:
+  contents: write  # Allow pushing commits
+  actions: read    # Allow reading workflow status
+ 
  
 on:
   push:
